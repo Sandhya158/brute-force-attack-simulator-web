@@ -6,7 +6,8 @@ from typing import Callable, Optional
 
 from core.auth import AuthSystem
 from core.wordlist import (
-    generate          as generate_wordlist,
+    generate                    as generate_wordlist,
+    generate_case_mutation_list as generate_case_list,
     brute_force_generator,
     brute_force_count,
     charset_for_mode,
@@ -184,14 +185,70 @@ class BruteForceSimulator:
 
             time.sleep(speed_delay)
 
-        if result.was_stopped or not run_brute_force:
+        if result.was_stopped:
             result.total_time = time.time() - t_start
             if on_done:
                 on_done(result)
             return
 
         # ══════════════════════════════════════════════════════════════════════
-        #  PHASE 2 — Brute Force (Permutation / Combination)
+        #  PHASE 1.5 — Case-Mutation Attack  (CEH Module 6: System Hacking)
+        # ══════════════════════════════════════════════════════════════════════
+        # Many users use their username with mixed capitalisation as a password.
+        # This phase exhausts every upper/lower permutation of the username
+        # and common username+suffix combos — identical to Hashcat's 'toggle'
+        # rule. It catches passwords like "JoHn", "jOHN", "aDmIn", "AlIcE1" etc.
+        #
+        # Without this phase, a case-varied 4-char password would require
+        # traversing millions of brute-force candidates before being found.
+        # With it, we check at most 2^len(username) × seed_count variants first.
+        # ──────────────────────────────────────────────────────────────────────
+        case_list = [p for p in generate_case_list(username) if p not in tried]
+        case_total = len(case_list)
+
+        if case_total > 0:
+            if on_phase:
+                on_phase(
+                    "1.5",
+                    f"Case-Mutation Attack  |  toggle-case permutations  |  ~{case_total} combos",
+                    case_total,
+                )
+
+            auth.reset_account(username)
+
+            for password in case_list:
+                if self._stop.is_set():
+                    result.was_stopped = True
+                    break
+
+                tried.add(password)
+                res   = self._attempt(username, password)
+                entry = self._make_entry(username, password, res, phase="1.5")
+                result.attempts.append(entry)
+
+                if on_attempt:
+                    on_attempt(entry)
+
+                if res["success"]:
+                    result.found_password = password
+                    result.phase          = "1.5"
+                    result.total_time     = time.time() - t_start
+                    if on_done:
+                        on_done(result)
+                    return
+
+                if res["locked"]:
+                    time.sleep(0.2)
+                    auth.reset_account(username)
+
+                time.sleep(speed_delay)
+
+        if result.was_stopped or not run_brute_force:
+            result.total_time = time.time() - t_start
+            if on_done:
+                on_done(result)
+            return
+
         # ══════════════════════════════════════════════════════════════════════
         charset     = charset_for_mode(bf_mode)
         bf_total    = brute_force_count(bf_max_len, charset)
